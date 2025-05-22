@@ -37,7 +37,7 @@ uv sync
    ```
 3. Ejecuta el bot:
    ```bash
-   python bot_zonas.py
+   python main.py
    ```
 
 ## 🎮 Comandos
