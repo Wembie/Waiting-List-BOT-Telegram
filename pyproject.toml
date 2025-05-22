@@ -1,0 +1,18 @@
+[project]
+name = "waiting_list_da21"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-telegram-bot",
+    "pytz",
+    "python-telegram-bot[job-queue]",
+]
+
+[dependency-groups]
+dev = [
+    "flake8>=7.1.2",
+    "black>=25.1.0",
+    "mypy>=1.15.0",
+]
