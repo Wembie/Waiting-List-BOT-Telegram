@@ -14,7 +14,7 @@ from logging import basicConfig, getLogger, INFO, WARNING
 TOKEN = "TU_TOKEN_AQUI"
 CREATOR_USERNAME = "@Soy_Acos"
 ROTATION_DURATION_MINUTES = 120
-DICE_NAME = "NOMBRE_DEL_DADO"
+DICE_NAME = "EXAMPLE"
 
 # Setup logging
 basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=INFO)
@@ -601,6 +601,10 @@ async def cmd_cerrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if await is_admin(context, chat_id, user_id):
         list_open = False
+        for zone in zones:
+            zones[zone] = None
+        waiting_list.clear()
+
         await update.message.reply_text("🔒 Lista cerrada.")
         logger.info("Lista cerrada")
     else:
