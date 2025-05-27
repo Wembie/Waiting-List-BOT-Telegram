@@ -14,7 +14,7 @@ from logging import basicConfig, getLogger, INFO, WARNING
 TOKEN = "TU_TOKEN_AQUI"
 CREATOR_USERNAME = "@Soy_Acos"
 ROTATION_DURATION_MINUTES = 120
-DICE_NAME = "EXAMPLE"
+DICE_NAME = "NOMBRE_DEL_DADO"
 
 # Setup logging
 basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=INFO)
