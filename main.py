@@ -6,6 +6,7 @@ from telegram.ext import (
     ContextTypes,
     CallbackContext,
 )
+from telegram.error import BadRequest
 from pytz import timezone
 from datetime import datetime, timedelta
 from logging import basicConfig, getLogger, INFO, WARNING
@@ -106,17 +107,47 @@ def format_list():
 async def validate_message(update: Update):
     """Validar que el mensaje no es None (para evitar errores con mensajes editados)"""
     if not update.message:
-        logger.warning("⚠️  Mensaje editado ignorado - no se procesarán comandos en mensajes editados")
+        logger.warning(
+            "⚠️  Mensaje editado ignorado - no se procesarán comandos en mensajes editados"
+        )
         return False
     return True
 
 
-async def reject_private_messages(update: Update):
+async def safe_reply(update, context, message):
+    """Función auxiliar para enviar mensajes de forma segura"""
+    try:
+        # Intentar responder al mensaje original
+        await update.message.reply_text(message)
+    except BadRequest as e:
+        if "Message to be replied not found" in str(e):
+            # Si el mensaje original no se encuentra, enviar mensaje normal
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=message
+            )
+            logger.warning(
+                f"Mensaje original no encontrado, enviando mensaje directo: {e}"
+            )
+        else:
+            # Re-lanzar otros errores BadRequest
+            raise e
+    except Exception as e:
+        logger.error(f"Error inesperado al enviar mensaje: {e}")
+        # Como fallback, intentar envío directo
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=message
+            )
+        except Exception as fallback_error:
+            logger.error(f"Error en fallback: {fallback_error}")
+
+
+async def reject_private_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await validate_message(update):
         return False
     if update.effective_chat.type == "private":
-        await update.message.reply_text(
-            "🚫 Este bot no funciona por mensajes privados."
+        await safe_reply(
+            update, context, "🚫 Este bot no funciona por mensajes privados."
         )
         logger.warning(
             f"⛔ Mensaje privado rechazado de @{update.effective_user.username}"
@@ -125,33 +156,32 @@ async def reject_private_messages(update: Update):
     return True
 
 
-async def check_authorized_chat(update: Update):
+async def check_authorized_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Verificar que el comando viene del chat autorizado"""
     if not await validate_message(update):
         return False
-        
+
     current_chat_id = update.effective_chat.id
 
     if not authorized or authorized_chat_id is None:
-        await update.message.reply_text("🚫 Este bot no está autorizado actualmente.")
+        await safe_reply(update, context, "🚫 Este bot no está autorizado actualmente.")
         return False
 
     if current_chat_id != authorized_chat_id:
-        await update.message.reply_text(
-            "🚫 Este bot solo funciona en el grupo autorizado."
+        await safe_reply(
+            update, context, "🚫 Este bot solo funciona en el grupo autorizado."
         )
         logger.warning(
             f"⛔ Intento de uso desde chat no autorizado: {current_chat_id} (autorizado: {authorized_chat_id})"
         )
         return False
-
     return True
 
 
 # Comandos
 async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global authorized, authorized_chat_id
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
     user = update.effective_user
 
@@ -172,13 +202,17 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Set up the rotation job with the current chat ID
         setup_rotation_job(context, current_chat_id)
 
-        await update.message.reply_text(
-            f"🔓 Bot autorizado correctamente para este grupo.\n🆔 Chat ID autorizado: `{current_chat_id}`"
+        await safe_reply(
+            update,
+            context,
+            f"🔓 Bot autorizado correctamente para este grupo.\n🆔 Chat ID autorizado: `{current_chat_id}`",
         )
         logger.info(f"✅ Bot autorizado por el creador en chat ID: {current_chat_id}")
     else:
-        await update.message.reply_text(
-            f"🚫 Solo {CREATOR_USERNAME} puede autorizar el uso del bot."
+        await safe_reply(
+            update,
+            context,
+            f"🚫 Solo {CREATOR_USERNAME} puede autorizar el uso del bot.",
         )
         logger.warning(
             f"⛔ Usuario no autorizado intentó activar el bot: @{user.username}"
@@ -204,15 +238,15 @@ def setup_rotation_job(context, chat_id):
 
 async def cmd_desautorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global authorized, authorized_chat_id, rotation_job, list_open
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
     user = update.effective_user
 
     if is_creator(user):
         # Verificar que el comando viene del chat autorizado (si existe)
         if authorized_chat_id and update.effective_chat.id != authorized_chat_id:
-            await update.message.reply_text(
-                "🚫 Solo puedes desautorizar desde el chat autorizado."
+            await safe_reply(
+                update, context, "🚫 Solo puedes desautorizar desde el chat autorizado."
             )
             return
 
@@ -230,48 +264,54 @@ async def cmd_desautorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rotation_job.schedule_removal()
             rotation_job = None
 
-        await update.message.reply_text(
-            "🔒 Bot desactivado correctamente.\n🆔 Chat autorizado limpiado."
+        await safe_reply(
+            update,
+            context,
+            "🔒 Bot desactivado correctamente.\n🆔 Chat autorizado limpiado.",
         )
         logger.info("🔻 Bot desactivado por el creador.")
     else:
-        await update.message.reply_text("🚫 Solo el creador puede desautorizar el bot.")
+        await safe_reply(
+            update, context, "🚫 Solo el creador puede desautorizar el bot."
+        )
         logger.warning(
             f"⛔ Usuario no autorizado intentó desactivar el bot: @{user.username}"
         )
 
 
-async def check_authorized(update):
-    return await check_authorized_chat(update)
+async def check_authorized(update, context):
+    return await check_authorized_chat(update, context)
 
 
-async def check_list_open(update):
+async def check_list_open(update, context):
     if not await validate_message(update):
         return False
     if not list_open:
-        await update.message.reply_text(
-            "🚫 La lista está cerrada actualmente. Usa /abrir o /abrirlista para habilitarla."
+        await safe_reply(
+            update,
+            context,
+            "🚫 La lista está cerrada actualmente. Usa /abrir o /abrirlista para habilitarla.",
         )
         return False
     return True
 
 
 async def cmd_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
-    await update.message.reply_text(format_list())
+    await safe_reply(update, context, format_list())
 
 
 async def assign_zone(update, zone, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
 
     username = context.args[0] if context.args else f"@{update.effective_user.username}"
@@ -279,55 +319,59 @@ async def assign_zone(update, zone, context: ContextTypes.DEFAULT_TYPE):
     # Verificar si el usuario ya está en otra zona
     for current_zone, occupant in zones.items():
         if occupant == username:
-            await update.message.reply_text(
-                f"⚠️ Ya estás en la zona {current_zone[1]}⃣. Primero usa /exit para salir."
+            await safe_reply(
+                update,
+                context,
+                f"⚠️ Ya estás en la zona {current_zone[1]}⃣. Primero usa /exit para salir.",
             )
             return
 
     # Verificar si el usuario está en la lista de espera
     if username in waiting_list:
-        await update.message.reply_text(
-            "⚠️ Estás en la lista de espera. Usa /exit para salir de ella primero."
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Estás en la lista de espera. Usa /exit para salir de ella primero.",
         )
         return
 
     # Asignar a la zona solicitada si está disponible
     if zones[zone] is None:
         zones[zone] = username
-        await update.message.reply_text(f"✅ {username} asignado a Zona {zone[1]}⃣")
+        await safe_reply(update, context, f"✅ {username} asignado a Zona {zone[1]}⃣")
         logger.info(f"{username} asignado a {zone}")
     else:
-        await update.message.reply_text(f"⚠️ La zona {zone[1]}⃣ ya está ocupada.")
-    await update.message.reply_text(format_list())
+        await safe_reply(update, context, f"⚠️ La zona {zone[1]}⃣ ya está ocupada.")
+    await safe_reply(update, context, format_list())
 
 
-async def remove_zone(update, zone):
-    if not await reject_private_messages(update):
+async def remove_zone(update, zone, context):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
     username = f"@{update.effective_user.username}"
 
     # Verificar que el usuario esté en la zona específica
     if zones[zone] == username:
         zones[zone] = None  # Dejar como vacío, no como "Libre"
-        await update.message.reply_text(f"🚫 {username} ha salido de Zona {zone[1]}⃣")
+        await safe_reply(update, context, f"🚫 {username} ha salido de Zona {zone[1]}⃣")
         logger.info(f"{username} eliminado de {zone}")
     else:
-        await update.message.reply_text(
-            f"⚠️ No estás en la zona {zone[1]}⃣ o no tienes permiso."
+        await safe_reply(
+            update, context, f"⚠️ No estás en la zona {zone[1]}⃣ o no tienes permiso."
         )
-    await update.message.reply_text(format_list())
+    await safe_reply(update, context, format_list())
 
 
 async def cmd_espera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
 
     chat_id = update.effective_chat.id
@@ -336,8 +380,10 @@ async def cmd_espera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Si hay argumentos, validamos si el usuario es admin
     if context.args:
         if not await is_admin(context, chat_id, user_id):
-            await update.message.reply_text(
-                "🚫 Solo los administradores pueden añadir a otros usuarios a la lista de espera."
+            await safe_reply(
+                update,
+                context,
+                "🚫 Solo los administradores pueden añadir a otros usuarios a la lista de espera.",
             )
             return
         username = context.args[0]
@@ -347,28 +393,32 @@ async def cmd_espera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Verificar si el usuario ya está en alguna zona
     for zone, occupant in zones.items():
         if occupant == username:
-            await update.message.reply_text(
-                f"⚠️ {username} ya está en la zona {zone[1]}⃣. Usa /exit para salir primero."
+            await safe_reply(
+                update,
+                context,
+                f"⚠️ {username} ya está en la zona {zone[1]}⃣. Usa /exit para salir primero.",
             )
             return
 
     # Verificar si ya está en la lista de espera
     if username in waiting_list:
-        await update.message.reply_text(f"⚠️ {username} ya está en la lista de espera.")
+        await safe_reply(
+            update, context, f"⚠️ {username} ya está en la lista de espera."
+        )
     else:
         waiting_list.append(username)
-        await update.message.reply_text(f"📥 {username} añadido a la lista de espera")
+        await safe_reply(update, context, f"📥 {username} añadido a la lista de espera")
         logger.info(f"{username} añadido a espera")
 
-    await update.message.reply_text(format_list())
+    await safe_reply(update, context, format_list())
 
 
 async def cmd_cambiar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
 
     args = context.args
@@ -376,8 +426,8 @@ async def cmd_cambiar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username1 = f"@{user.username}"
 
     if len(args) == 0:
-        await update.message.reply_text(
-            "❌ Usa /cambiar @Usuario o /cambiar @Usuario1 @Usuario2"
+        await safe_reply(
+            update, context, "❌ Usa /cambiar @Usuario o /cambiar @Usuario1 @Usuario2"
         )
         return
 
@@ -388,19 +438,21 @@ async def cmd_cambiar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_creator(user) and not await is_admin(
             context, update.effective_chat.id, user.id
         ):
-            await update.message.reply_text(
-                "🚫 Solo administradores pueden intercambiar a otros."
+            await safe_reply(
+                update, context, "🚫 Solo administradores pueden intercambiar a otros."
             )
             return
         username1, username2 = args
     else:
-        await update.message.reply_text(
-            "❌ Formato incorrecto. Usa /cambiar @Usuario o /cambiar @Usuario1 @Usuario2"
+        await safe_reply(
+            update,
+            context,
+            "❌ Formato incorrecto. Usa /cambiar @Usuario o /cambiar @Usuario1 @Usuario2",
         )
         return
 
     if username1 == username2:
-        await update.message.reply_text("❌ No puedes intercambiarte contigo mismo.")
+        await safe_reply(update, context, "❌ No puedes intercambiarte contigo mismo.")
         return
 
     # Buscar posiciones
@@ -416,8 +468,10 @@ async def cmd_cambiar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pos2 = find_user_position(username2)
 
     if not pos1 and not pos2:
-        await update.message.reply_text(
-            "❌ Ninguno de los usuarios está en zonas ni en lista de espera."
+        await safe_reply(
+            update,
+            context,
+            "❌ Ninguno de los usuarios está en zonas ni en lista de espera.",
         )
         return
 
@@ -446,18 +500,18 @@ async def cmd_cambiar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif pos2[0] == "wait":
             waiting_list[pos2[1]] = username1
 
-    await update.message.reply_text(
-        f"🔁 {username1} ha sido intercambiado con {username2}"
+    await safe_reply(
+        update, context, f"🔁 {username1} ha sido intercambiado con {username2}"
     )
-    await update.message.reply_text(format_list())
+    await safe_reply(update, context, format_list())
 
 
 async def cmd_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
 
     user_requesting = update.effective_user
@@ -467,12 +521,12 @@ async def cmd_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Si se pasa un @usuario como argumento
     if args:
         # if not await is_admin(context, update.effective_chat.id, user_requesting.id) and not is_creator(user_requesting):
-        #     await update.message.reply_text("🚫 Solo administradores pueden expulsar a otros usuarios.")
+        #     await safe_reply(update, context, "🚫 Solo administradores pueden expulsar a otros usuarios.")
         #     return
         if args[0].startswith("@"):
             target_username = args[0]
         else:
-            await update.message.reply_text("⚠️ Usa el formato /exit @usuario")
+            await safe_reply(update, context, "⚠️ Usa el formato /exit @usuario")
             return
 
     removed = False
@@ -494,43 +548,49 @@ async def cmd_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if removed:
         if target_username == f"@{user_requesting.username}":
-            await update.message.reply_text("✅ Saliste correctamente.")
+            await safe_reply(update, context, "✅ Saliste correctamente.")
         else:
-            await update.message.reply_text(
-                f"✅ {target_username} fue removido correctamente."
+            await safe_reply(
+                update, context, f"✅ {target_username} fue removido correctamente."
             )
     else:
-        await update.message.reply_text(
-            f"⚠️ {target_username} no se encontraba en ninguna zona ni en la lista."
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ {target_username} no se encontraba en ninguna zona ni en la lista.",
         )
 
-    await update.message.reply_text(format_list())
+    await safe_reply(update, context, format_list())
 
 
 async def cmd_tomarlibre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    if not await check_list_open(update):
+    if not await check_list_open(update, context):
         return
     if not waiting_list:
-        await update.message.reply_text(f"⚠️ No hay ningun espacio libre.")
+        await safe_reply(update, context, f"⚠️ No hay ningun espacio libre.")
         return
     username = f"@{update.effective_user.username}"
 
     # Verificar que el usuario no esté ya en ninguna zona
     for zone, occupant in zones.items():
         if occupant == username:
-            await update.message.reply_text(
-                f"⚠️ Ya estás en la zona {zone[1]}⃣. Primero usa /exit para salir."
+            await safe_reply(
+                update,
+                context,
+                f"⚠️ Ya estás en la zona {zone[1]}⃣. Primero usa /exit para salir.",
             )
             return
 
     # Verificar que el usuario no esté en la lista de espera
     if username in waiting_list:
-        await update.message.reply_text(
-            "⚠️ Estás en la lista de espera. Usa /exit para salir de ella primero."
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Estás en la lista de espera. Usa /exit para salir de ella primero.",
         )
         return
 
@@ -544,24 +604,24 @@ async def cmd_tomarlibre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Si hay un "Libre" en la lista de espera, asignar al usuario allí
     if libre_index is not None:
         waiting_list[libre_index] = username
-        await update.message.reply_text(
-            f"✅ {username} tomó un lugar libre en la lista de espera"
+        await safe_reply(
+            update, context, f"✅ {username} tomó un lugar libre en la lista de espera"
         )
         logger.info(f"{username} tomó lugar libre en la lista de espera")
-        await update.message.reply_text(format_list())
+        await safe_reply(update, context, format_list())
         return
 
-    await update.message.reply_text("⚠️ No hay lugares libres disponibles.")
+    await safe_reply(update, context, "⚠️ No hay lugares libres disponibles.")
 
 
 async def cmd_abrir(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
     global list_open
     if list_open is True:
-        await update.message.reply_text("🔓 La lista ya esta abierta.")
+        await safe_reply(update, context, "🔓 La lista ya esta abierta.")
         return
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -575,25 +635,25 @@ async def cmd_abrir(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if rotation_job:
             setup_rotation_job(context, authorized_chat_id)
 
-        await update.message.reply_text(
-            "🔓 Lista abierta. ¡Ya puedes usar los comandos!"
+        await safe_reply(
+            update, context, "🔓 Lista abierta. ¡Ya puedes usar los comandos!"
         )
-        await update.message.reply_text(format_list())
+        await safe_reply(update, context, format_list())
         logger.info("Lista abierta")
     else:
-        await update.message.reply_text(
-            "🚫 Solo los administradores pueden abrir la lista."
+        await safe_reply(
+            update, context, "🚫 Solo los administradores pueden abrir la lista."
         )
 
 
 async def cmd_cerrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
     global list_open
     if list_open is False:
-        await update.message.reply_text("🔓 La lista ya esta cerrada.")
+        await safe_reply(update, context, "🔓 La lista ya esta cerrada.")
         return
 
     chat_id = update.effective_chat.id
@@ -605,20 +665,22 @@ async def cmd_cerrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             zones[zone] = None
         waiting_list.clear()
 
-        await update.message.reply_text("🔒 Lista cerrada.")
+        await safe_reply(update, context, "🔒 Lista cerrada.")
         logger.info("Lista cerrada")
     else:
-        await update.message.reply_text(
-            "🚫 Solo los administradores pueden cerrar la lista."
+        await safe_reply(
+            update, context, "🚫 Solo los administradores pueden cerrar la lista."
         )
 
 
 async def cmd_reglas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
-    await update.message.reply_text(
+    await safe_reply(
+        update,
+        context,
         """📜 Reglas del Sistema de Zonas:
 1️⃣ Usa las zonas solo si estás disponible.
 2️⃣ Respeta los turnos y rotaciones.
@@ -626,16 +688,18 @@ async def cmd_reglas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4️⃣ No abuses del sistema.
 5️⃣ No editar mensajes con comandos.
 
-✅ ¡Convivencia primero!"""
+✅ ¡Convivencia primero!""",
     )
 
 
 async def cmd_comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
     if not await validate_message(update):
         return
-    await update.message.reply_text(
+    await safe_reply(
+        update,
+        context,
         """📌 Menú de Comandos:
 
 ▶️ Usuarios:
@@ -663,7 +727,7 @@ async def cmd_comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /desautorizar - Desactivar bot
 
 ▶️ Utilidades:
-/chatid - Mostrar ID del chat actual"""
+/chatid - Mostrar ID del chat actual""",
     )
 
 
@@ -712,9 +776,9 @@ async def job_rotacion(context: CallbackContext):
 
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await reject_private_messages(update):
+    if not await reject_private_messages(update, context):
         return
-    if not await check_authorized(update):
+    if not await check_authorized(update, context):
         return
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -723,13 +787,15 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         authorized_status = (
             "✅ AUTORIZADO" if chat_id == authorized_chat_id else "❌ NO AUTORIZADO"
         )
-        await update.message.reply_text(
-            f"🆔 ID de este chat: `{chat_id}`\n📊 Estado: {authorized_status}"
+        await safe_reply(
+            update,
+            context,
+            f"🆔 ID de este chat: `{chat_id}`\n📊 Estado: {authorized_status}",
         )
         logger.info(f"Solicitud de ID de chat: {chat_id}")
     else:
-        await update.message.reply_text(
-            "🚫 Solo los administradores pueden usar este comando."
+        await safe_reply(
+            update, context, "🚫 Solo los administradores pueden usar este comando."
         )
         logger.warning(
             f"⛔ Usuario no autorizado intentó obtener el ID del chat: @{update.effective_user.username}"
